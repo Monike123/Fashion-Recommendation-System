@@ -1,4 +1,7 @@
 # Outfit Recommendation System
+![DALL·E 2025-03-13 03 07 06 - A futuristic and stylish profile image for a fashion recommendation project  The image features a sleek AI-powered mannequin with a glowing neural net](https://github.com/user-attachments/assets/d3d0b12c-9c3d-4bfb-970c-2e7c7d66aa21)
+
+
 
 ## 📌 Overview
 The **Outfit Recommendation System** is an AI-powered model designed to predict clothing categories and recommend outfits based on color similarity. By leveraging deep learning and machine learning techniques, this system enhances the fashion recommendation process.
@@ -64,7 +67,7 @@ streamlit run app.py
 - ![women_accuracy_plot](https://github.com/user-attachments/assets/429afdf4-1eee-4884-8d00-c411af095263)
 - **Loss Graphs**:
 -![men_loss_plot](https://github.com/user-attachments/assets/2237971a-2bb0-405d-8df4-09179bd58c3e)
-- ![women_loss_plot](https://github.com/user-attachments/assets/f62e82d2-7eda-4312-b483-18049dfda05e)
+-![women_loss_plot](https://github.com/user-attachments/assets/f62e82d2-7eda-4312-b483-18049dfda05e)
 - **Confusion Matrix**: Provides insights into misclassifications.
 -![men_confusion_matrix](https://github.com/user-attachments/assets/dd3b2205-4455-44fc-8a33-193e513440be)
 - ![women_confusion_matrix](https://github.com/user-attachments/assets/e01ec653-c08e-4126-83d7-dbcf10d02ece)
