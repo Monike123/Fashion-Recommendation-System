@@ -70,7 +70,7 @@ streamlit run app.py
 - ![women_accuracy_plot](https://github.com/user-attachments/assets/429afdf4-1eee-4884-8d00-c411af095263)
 
 - **Loss Graphs**:
-- Men Model Loss Graph
+- Men Model Loss Graph 
 -![men_loss_plot](https://github.com/user-attachments/assets/2237971a-2bb0-405d-8df4-09179bd58c3e)
 - Women Model Loss Graph
 -![women_loss_plot](https://github.com/user-attachments/assets/f62e82d2-7eda-4312-b483-18049dfda05e)
