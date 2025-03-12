@@ -1,4 +1,4 @@
-# 🔥 Smart Outfit Recommender
+# 🔥 Smart Outfit Recommender 🔥
 ![DALL·E 2025-03-13 03 07 06 - A futuristic and stylish profile image for a fashion recommendation project  The image features a sleek AI-powered mannequin with a glowing neural net](https://github.com/user-attachments/assets/d3d0b12c-9c3d-4bfb-970c-2e7c7d66aa21)
 
 
