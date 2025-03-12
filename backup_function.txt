@@ -1,0 +1,892 @@
+#train.py
+
+import os
+import numpy as np
+import pickle
+import pandas as pd
+import joblib
+import tensorflow as tf
+import xgboost as xgb
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from keras.api.models import Sequential
+from keras.api.layers import Dense, Dropout, Input
+from Utlis import extract_image_features,precompute_dominant_colors  # Ensure this extracts 1280-dim features
+from sklearn.preprocessing import LabelEncoder
+
+# Define paths
+dataset_csv = "archive/men.csv"
+image_folder = "archive/men_images"
+unlabeled_images_folder = "archive/unlabel_images"
+graphs_folder = "graphs"
+model_folder = "model_details"
+os.makedirs(graphs_folder, exist_ok=True)
+os.makedirs(model_folder, exist_ok=True)
+
+#############################################################################################################################################################
+#############################################################################################################################################################
+#############################################################################################################################################################
+
+"""...... Load labeled data and extract only EfficientNetB0 features ......"""
+
+
+
+
+print("Extracting labeled image features...")
+df = pd.read_csv(dataset_csv)
+
+image_paths = [os.path.join(image_folder, f"{row['id']}.jpg") for _, row in df.iterrows()]
+X = np.array([extract_image_features(img_path) for img_path in image_paths])  # 1280-dim
+
+# Encode categorical labels
+usage_encoder = LabelEncoder()
+subcategory_encoder = LabelEncoder()
+
+df['usage'] = usage_encoder.fit_transform(df['usage'])  
+df['subCategory'] = subcategory_encoder.fit_transform(df['subCategory'])  
+
+# Extract labels
+y_usage = df['usage'].values
+y_subcategory = df['subCategory'].values
+
+# Save encoders for later inference
+joblib.dump(usage_encoder, os.path.join(model_folder, "usage_encoder.pkl"))
+joblib.dump(subcategory_encoder, os.path.join(model_folder, "subcategory_encoder.pkl"))
+
+#############################################################################################################################################################
+#############################################################################################################################################################
+#############################################################################################################################################################
+
+"""...... Precompute Dominant Colors/Usage/Subcategory ......"""
+
+dominant_colors, valid_image_paths,subCategory, articleType, usage = precompute_dominant_colors(df,image_folder)
+
+# Save to pickle file
+dominant_colors_data = {
+    "image_paths": valid_image_paths,
+    "dominant_colors": dominant_colors,
+    "subcategory_labels": subCategory,
+    "usage_labels": usage,
+    "articleType_labels": articleType
+}
+
+pkl_path = os.path.join(model_folder, "dominant_colors.pkl")
+with open(pkl_path, "wb") as f:
+    pickle.dump(dominant_colors_data, f)
+
+print(f"Saved dominant colors for {len(valid_image_paths)} images to dominant_colors.pkl")
+
+#############################################################################################################################################################
+#############################################################################################################################################################
+#############################################################################################################################################################
+
+
+
+"""...... Split data and train models ......"""
+
+# Split into train and test sets
+X_train, X_test, y_train_usage, y_test_usage = train_test_split(X, y_usage, test_size=0.2, random_state=42)
+X_train, X_test, y_train_sub, y_test_sub = train_test_split(X, y_subcategory, test_size=0.2, random_state=42)
+
+# Train Usage Prediction Model (MLP)
+print("Training Usage Prediction Model...")
+
+usage_model = Sequential([
+    Input(shape=(1280,)),  # Fixed feature size from EfficientNetB0
+    Dense(512, activation='relu'),
+    Dropout(0.5),
+    Dense(256, activation='relu'),
+    Dropout(0.5),
+    Dense(len(set(y_usage)), activation='softmax')  # Multi-class classification
+])
+
+usage_model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+                    loss='sparse_categorical_crossentropy',
+                    metrics=['accuracy'])
+
+history = usage_model.fit(X_train, y_train_usage, epochs=20, batch_size=32, validation_data=(X_test, y_test_usage))
+
+# Save the trained model
+usage_model.save(os.path.join(model_folder, "usage_model.keras"))
+
+print("Usage Prediction Model trained and saved!")
+
+#############################################################################################################################################################
+#############################################################################################################################################################
+#############################################################################################################################################################
+
+"""...... Train Subcategory Prediction Model (MLP) ......"""
+
+# Train Subcategory Prediction Model (MLP)
+print("Training Subcategory Prediction Model...")
+subcategory_model = Sequential([
+    Input(shape=(1280,)),  # Fixed feature size
+    Dense(512, activation='relu'),
+    Dropout(0.5),
+    Dense(256, activation='relu'),
+    Dropout(0.5),
+    Dense(len(set(y_subcategory)), activation='softmax')
+])
+
+subcategory_model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.001),
+              loss='sparse_categorical_crossentropy',
+              metrics=['accuracy'])
+
+history = subcategory_model.fit(X_train, y_train_sub, epochs=20, batch_size=32, validation_data=(X_test, y_test_sub))
+subcategory_model.save(os.path.join(model_folder, "subcategory_model.keras"))
+
+#############################################################################################################################################################
+#############################################################################################################################################################
+#############################################################################################################################################################
+"""...... Self-Training on Unlabeled Images ......"""
+
+# Self-Training on Unlabeled Images
+print("Performing self-training with unlabeled images...")
+unlabeled_features = []
+image_paths = []
+
+for img_file in os.listdir(unlabeled_images_folder):
+    img_path = os.path.join(unlabeled_images_folder, img_file)
+    image_paths.append(img_path)
+    unlabeled_features.append(extract_image_features(img_path))  # Ensure 1280-dim
+
+unlabeled_features = np.array(unlabeled_features)
+
+# Predict pseudo-labels
+pseudo_usage_labels = np.argmax(usage_model.predict(unlabeled_features), axis=1)
+pseudo_sub_labels = np.argmax(subcategory_model.predict(unlabeled_features), axis=1)
+
+# Combine pseudo-labeled data with real training data
+X_train_combined = np.vstack((X_train, unlabeled_features))
+y_train_usage_combined = np.concatenate((y_train_usage, pseudo_usage_labels))
+y_train_sub_combined = np.concatenate((y_train_sub, pseudo_sub_labels))
+
+# Retrain models with pseudo-labeled data
+print("Retraining Usage Model with Pseudo-Labels...")
+usage_model.fit(X_train_combined, y_train_usage_combined)
+joblib.dump(usage_model, os.path.join(model_folder, "usage_model.pkl"))
+
+print("Retraining Subcategory Model with Pseudo-Labels...")
+history = subcategory_model.fit(X_train_combined, y_train_sub_combined, epochs=10, batch_size=32, validation_data=(X_test, y_test_sub))
+subcategory_model.save(os.path.join(model_folder, "subcategory_model.keras"))
+
+
+#############################################################################################################################################################
+#############################################################################################################################################################
+#############################################################################################################################################################
+
+"""...... Evaluation ......"""
+
+# Evaluation
+print("Evaluating Model...")
+
+# Predict
+y_pred_numeric = np.argmax(subcategory_model.predict(X_test), axis=1)
+accuracy = accuracy_score(y_test_sub, y_pred_numeric)
+conf_matrix = confusion_matrix(y_test_sub, y_pred_numeric)
+report = classification_report(y_test_sub, y_pred_numeric)
+
+# Save Evaluation Results
+plt.figure(figsize=(8, 6))
+plt.plot(history.history['accuracy'], label='Train Accuracy')
+plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
+plt.xlabel('Epochs')
+plt.ylabel('Accuracy')
+plt.legend()
+plt.title('Model Accuracy')
+plt.savefig(os.path.join(graphs_folder, 'accuracy_plot.png'))
+plt.close()
+
+plt.figure(figsize=(8, 6))
+plt.plot(history.history['loss'], label='Train Loss')
+plt.plot(history.history['val_loss'], label='Validation Loss')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+plt.title('Model Loss')
+plt.savefig(os.path.join(graphs_folder, 'loss_plot.png'))
+plt.close()
+
+plt.figure(figsize=(8, 6))
+sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues')
+plt.xlabel('Predicted')
+plt.ylabel('Actual')
+plt.title('Confusion Matrix')
+plt.savefig(os.path.join(graphs_folder, 'confusion_matrix.png'))
+plt.close()
+
+print(f"Model Accuracy: {accuracy * 100:.2f}%")
+print("\nClassification Report:\n", report)
+
+print("Training complete! Models and evaluation results saved.")
+
+################################################################################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# utlis,py
+
+import cv2
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from keras.api.applications import EfficientNetB0 
+from keras.api.applications.efficientnet import preprocess_input
+from keras.api.preprocessing import image
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import OneHotEncoder, LabelEncoder
+from sklearn.metrics.pairwise import euclidean_distances
+from scipy.spatial import KDTree
+from joblib import Parallel, delayed
+from sklearn.neighbors import KDTree
+import streamlit as st
+import colorsys
+import random
+import pickle
+import os
+import colorsys
+import cv2
+from skimage import color
+
+#############################################################################################################################################################
+#############################################################################################################################################################
+#############################################################################################################################################################
+
+"""...  FEATURE EXTRACTION/TRAIN/TEST FUNCTIONS  ..."""
+
+
+# Load EfficientNetB0 model for feature extraction
+base_model = EfficientNetB0(weights="imagenet", include_top=False, input_shape=(224, 224, 3))
+model = tf.keras.Model(inputs=base_model.input, outputs=tf.keras.layers.GlobalAveragePooling2D()(base_model.output))
+
+def load_and_preprocess_image(img_path):
+    """Load an image and preprocess it for EfficientNetB0."""
+    img = image.load_img(img_path, target_size=(224, 224))
+    img_array = image.img_to_array(img)
+    img_array = np.expand_dims(img_array, axis=0)
+    img_array = tf.keras.applications.efficientnet.preprocess_input(img_array)
+    return img_array
+
+def extract_image_features(img_input):
+    """Extract EfficientNetB0 features from an image file path or array."""
+    if isinstance(img_input, str):  # If input is a file path
+        img_array = load_and_preprocess_image(img_input)
+    else:  # If input is an image array (OpenCV format)
+        img = cv2.resize(img_input, (224, 224))
+        img = np.expand_dims(img.astype(np.float32) / 255.0, axis=0)
+        img_array = tf.keras.applications.efficientnet.preprocess_input(img)
+
+    features = model.predict(img_array)
+    return features.flatten()
+
+import cv2
+import numpy as np
+from sklearn.cluster import KMeans
+
+def extract_dominant_color(img_input, k=3):
+    """Fast & optimized dominant color extraction focusing on the clothing item."""
+    
+    # Load image
+    if isinstance(img_input, str):  # If it's a file path
+        img = cv2.imread(img_input)
+    else:  # If it's an image array
+        img = img_input.copy()
+
+    if img is None:
+        raise ValueError("Invalid image input. Check file path or image array.")
+
+    # Resize to speed up processing (optional, adjust based on your system)
+    img = cv2.resize(img, (300, 300), interpolation=cv2.INTER_AREA)
+
+    # Convert to RGB
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    # ---------------------- 1️⃣ FAST CLOTHING DETECTION ----------------------
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+
+    # Adaptive thresholding for better edge detection
+    mask = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 11, 3)
+
+    # Morphology to reduce noise (only 1 iteration for speed)
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    # Find largest contour (clothing area)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if not contours:
+        return (0, 0, 0)  # Return black if no contour found
+
+    # Get the largest contour & crop around it
+    largest_contour = max(contours, key=cv2.contourArea)
+    x, y, w, h = cv2.boundingRect(largest_contour)
+    
+    # Ensure valid size
+    if w < 40 or h < 40:  
+        return (0, 0, 0)
+    
+    # Crop to the detected clothing region
+    cropped_img = img_rgb[y:y+h, x:x+w]
+
+    # ---------------------- 2️⃣ FAST COLOR EXTRACTION ----------------------
+    pixels = cropped_img.reshape(-1, 3)
+
+    # Remove near-black background pixels (faster than DBSCAN)
+    pixels = pixels[np.any(pixels > [20, 20, 20], axis=1)]  
+
+    if len(pixels) < 50:  
+        return (0, 0, 0)
+
+    # K-Means for dominant color detection
+    kmeans = KMeans(n_clusters=k, random_state=0, n_init=5)
+    kmeans.fit(pixels)
+
+    # Get the most frequent cluster
+    cluster_labels, counts = np.unique(kmeans.labels_, return_counts=True)
+    dominant_cluster = cluster_labels[np.argmax(counts)]
+    dominant_color = kmeans.cluster_centers_[dominant_cluster]
+
+    return tuple(map(int, dominant_color))  # Convert to integer RGB values
+
+def load_metadata(csv_path):
+    """Load metadata from CSV file and encode categorical variables."""
+    df = pd.read_csv(csv_path)
+    categorical_columns = ['gender', 'subCategory', 'articleType', 'baseColour', 'usage']
+    encoder = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
+    encoded_features = encoder.fit_transform(df[categorical_columns])
+    return df['id'].values, encoded_features
+
+def prepare_training_data(image_folder, csv_path):
+    """Prepare training data by combining image features and metadata."""
+    ids, metadata_features = load_metadata(csv_path)
+    image_features = []
+    
+    for img_id in ids:
+        img_path = os.path.join(image_folder, str(img_id) + ".jpg")
+        if os.path.exists(img_path):
+            img_encodings = extract_image_features(img_path)
+            image_features.append(img_encodings)
+        else:
+            image_features.append(np.zeros(1280))  # Placeholder if image is missing
+    
+    image_features = np.array(image_features)
+    combined_features = np.hstack((image_features, metadata_features))
+    return combined_features
+
+
+
+def prepare_single_image(image_array):
+    """Prepares a single image (OpenCV format) for model prediction."""
+    # Resize the image to match EfficientNetB0 input size
+    image = cv2.resize(image_array, (224, 224))
+    
+    # Convert to float32 and normalize
+    image = image.astype(np.float32) / 255.0
+    
+    # Expand dimensions to match batch format (1, 224, 224, 3)
+    image = np.expand_dims(image, axis=0)
+    
+    # Preprocess for EfficientNetB0
+    image = preprocess_input(image)
+
+    # Extract deep features
+    features = extract_image_features(image)  # This should return a (1, N) feature vector
+
+    return features
+
+#############################################################################################################################################################
+#############################################################################################################################################################
+#############################################################################################################################################################
+
+"""...  SIMILAR ITEM RECOMMENDATION FUNCTIONS  ..."""
+
+
+  # Ensure this function is optimized
+
+
+def precompute_dominant_colors(df, image_folder):
+    """Precompute dominant colors and subcategories for all images and store them in a pickle file."""
+    dominant_colors = []
+    valid_image_paths = []
+    subcategories = []
+    artcleTypes = []
+    usage = []
+
+
+    for _, row in df.iterrows():
+        image_path = os.path.join(image_folder, f"{row['id']}.jpg")  # Construct full image path
+        subcategory = row.get("subCategory", None)
+        articleType = row.get("articleType", None)
+        usage_ = row.get("usage", None)
+
+        # Skip missing paths or invalid files
+        if not os.path.exists(image_path):
+            continue
+
+        image = cv2.imread(image_path)
+        if image is None:
+            continue
+        
+        try:
+            # Extract dominant color
+            color = extract_dominant_color(image)
+            dominant_colors.append(color)
+            valid_image_paths.append(image_path)
+            subcategories.append(subcategory)
+            artcleTypes.append(articleType)
+            usage.append(usage_)
+        except Exception as e:
+            print(f"Error processing {image_path}: {e}")
+
+    return np.array(dominant_colors), valid_image_paths, subcategories, artcleTypes, usage
+
+def extract_color_features(image_path):
+    """Extracts a color feature vector from an image after resizing."""
+    img = cv2.imread(image_path)
+    img = cv2.resize(img, (50, 50))  # Reduce image size for faster processing
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)  # Convert to HSV for better color representation
+    hist = cv2.calcHist([img], [0, 1, 2], None, [8, 8, 8], [0, 180, 0, 256, 0, 256])
+    return cv2.normalize(hist, hist).flatten()  # Flatten to 1D feature vector
+
+# Cache the dataset loading to avoid reloading on every interaction
+@st.cache_data
+def load_dataset(csv_path, image_folder):
+    """Loads dataset and precomputes color features for all images."""
+    df = pd.read_csv(csv_path)
+    df['image_path'] = df['id'].apply(lambda x: os.path.join(image_folder, f"{x}.jpg"))
+    df = df[df['image_path'].apply(os.path.exists)]
+    # Extract color features in parallel
+    df['color_features'] = Parallel(n_jobs=-1)(
+        delayed(extract_dominant_color)(path) for path in df['image_path']
+    )
+    
+    return df
+
+def load_precomputed_colors(pkl_path):
+    """Load precomputed dominant colors and categories from the pickle file."""
+    with open(pkl_path, "rb") as f:
+        data = pickle.load(f)
+
+    return np.array(data["dominant_colors"]), data["image_paths"], data["subcategory_labels"] , data["articleType_labels"] , data["usage_labels"]  
+
+
+#############################################################################################################################################################
+#############################################################################################################################################################
+#############################################################################################################################################################
+
+"""...  SIMILAR FUNCTIONS  ..."""
+
+
+def find_similar_colors(image, pkl_path, selected_category, selected_usages, min_similar=5, threshold=100):
+    """Finds the top 5 most similar items based on color, considering all images in the selected category."""
+    dominant_colors, image_paths, categories, article_types, usages = load_precomputed_colors(pkl_path)
+
+    # Extract dominant color from the uploaded image
+    target_color = np.array(extract_dominant_color(image))
+
+    # Filter images by selected category
+    filtered_indices = [
+        i for i, cat in enumerate(categories) if cat == selected_category
+    ]
+
+    if len(filtered_indices) == 0:
+        return []  # No images in the selected category
+
+    # Further filter by selected usage types
+    if selected_usages:  # Only apply if the user selected any usage types
+        filtered_indices = [
+            i for i in filtered_indices if int(usages[i]) in selected_usages
+        ]
+
+    if len(filtered_indices) == 0:
+        return []  # No images match the selected usage types
+
+    # Get the colors, paths, article types, and usage of filtered images
+    filtered_colors = np.array([dominant_colors[i] for i in filtered_indices])
+    filtered_paths = [image_paths[i] for i in filtered_indices]
+    filtered_article_types = [article_types[i] for i in filtered_indices]
+    filtered_usages = [usages[i] for i in filtered_indices]
+
+    # Compute color distances (Euclidean distance in RGB space)
+    distances = np.linalg.norm(filtered_colors - target_color, axis=1)
+
+    # Sort by closest color match
+    sorted_indices = np.argsort(distances)
+    
+    similar_images = [filtered_paths[i] for i in sorted_indices]
+    similar_article_types = [filtered_article_types[i] for i in sorted_indices]
+    similar_usages = [filtered_usages[i] for i in sorted_indices]
+    similar_colors = [filtered_colors[i] for i in sorted_indices]
+
+    # Filter images within the threshold
+    valid_indices = [i for i in range(len(similar_images)) if distances[sorted_indices[i]] < threshold]
+
+    if len(valid_indices) < min_similar:
+        valid_indices = range(min_similar)  # Ensure at least min_similar results
+
+    # Use session state to cycle through suggestions
+    if "suggestion_index" not in st.session_state:
+        st.session_state.suggestion_index = 0  # Initialize index
+
+    if st.button("Refresh"):
+        i = st.session_state.suggestion_index
+        st.session_state.suggestion_index = i + 1
+
+    # Get the next 5 suggestions
+    start_idx = st.session_state.suggestion_index
+    end_idx = start_idx + 5
+    displayed_indices = valid_indices[start_idx:end_idx]
+
+    # Update index for next refresh
+    st.session_state.suggestion_index = (start_idx + 5) % len(valid_indices)  # Loop back when reaching the end
+
+    # Return images with metadata
+    return [
+        {
+            "path": similar_images[i],
+            "article_type": similar_article_types[i],
+            "usage": similar_usages[i],
+            "color": tuple(map(int, similar_colors[i]))  # Convert numpy array to tuple
+        }
+        for i in displayed_indices
+    ]
+
+#############################################################################################################################################################
+#############################################################################################################################################################
+#############################################################################################################################################################
+ 
+
+def recommend_outfit(image, pkl_path, selected_category, selected_usage, color_theory="Complementary", min_similar=5, threshold=150):
+    """
+    Recommends a matching Topwear or Bottomwear based on the uploaded image using color theory.
+    """
+    try:
+        # Load precomputed color data
+        dominant_colors, image_paths, categories, article_types, usages = load_precomputed_colors(pkl_path)
+
+        # Extract dominant color from the uploaded image
+        target_color = np.array(extract_dominant_color(image))
+        target_lab = color.rgb2lab(target_color.reshape(1, 1, 3) / 255)[0, 0]  # Convert to LAB
+        st.write(f"🎨 Extracted Color (RGB): {target_color}")
+        st.write(f"🎨 Extracted Color (LAB): {target_lab}")
+
+        # Filter items belonging to the selected category and usage
+        filtered_indices = [i for i, cat in enumerate(categories) if cat == int(selected_category) and usages[i] == int(selected_usage)]
+
+        if not filtered_indices:
+            st.warning("⚠️ No matching items found for the selected category and usage.")
+            return []
+
+        # Extract relevant data for the filtered items
+        filtered_colors = np.array([dominant_colors[i] for i in filtered_indices])
+        filtered_paths = [image_paths[i] for i in filtered_indices]
+        filtered_article_types = [article_types[i] for i in filtered_indices]
+
+        # Get the matching color based on selected color theory approach
+        match_color = np.array(get_color_scheme(target_color, color_theory))
+        match_lab = color.rgb2lab(match_color.reshape(1, 1, 3) / 255)[0, 0]  # Convert to LAB
+        st.write(f"🎨 Matching Color using {color_theory} (RGB): {match_color}")
+        st.write(f"🎨 Matching Color (LAB): {match_lab}")
+
+        # Convert filtered colors to LAB
+        filtered_lab_colors = np.array([color.rgb2lab(c.reshape(1, 1, 3) / 255)[0, 0] for c in filtered_colors])
+
+        # Compute Delta E distances
+        delta_e_distances = np.array([np.linalg.norm(match_lab - lab) for lab in filtered_lab_colors])
+
+        # Sort items by closest Delta E match
+        sorted_indices = np.argsort(delta_e_distances)[:10]  # Get top 10 closest matches
+        similar_images = [filtered_paths[i] for i in sorted_indices]
+        similar_article_types = [filtered_article_types[i] for i in sorted_indices]
+        similar_colors = [filtered_colors[i] for i in sorted_indices]
+
+        # Return matched outfit items
+        return [
+            {
+                "path": similar_images[i],
+                "article_type": similar_article_types[i],
+                "color": tuple(map(int, similar_colors[i]))
+            }
+            for i in range(len(sorted_indices))
+        ]
+
+    except Exception as e:
+        st.error(f"🚨 Error in recommend_outfit: {e}")
+        return []
+
+def get_color_scheme(color, approach):
+    """Generate a matching color based on the selected approach."""
+    r, g, b = color
+    h, s, v = colorsys.rgb_to_hsv(r/255, g/255, b/255)
+
+    if approach == "Complementary":
+        h = (h + 0.5) % 1  # Opposite hue
+    elif approach == "Analogous":
+        h = (h + 0.083) % 1  # Slightly shifted hue
+    elif approach == "Triadic":
+        h = (h + 1/3) % 1  # 120-degree shift
+    elif approach == "Monochromatic":
+        s = max(0.3, min(1, s * 1.2))  # Adjust saturation
+
+    new_color = tuple(int(c * 255) for c in colorsys.hsv_to_rgb(h, s, v))
+    return new_color
+
+
+
+
+
+##############################################################################################################################################################################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+app.py
+
+
+import streamlit as st
+import joblib
+import numpy as np
+import tensorflow as tf
+import xgboost as xgb
+import cv2
+import pandas as pd
+from Utlis import extract_image_features, extract_dominant_color , find_similar_colors ,load_dataset,recommend_outfit
+
+# Load models and encoders
+model_folder = "model_details"
+usage_model = tf.keras.models.load_model(f"{model_folder}/usage_model.keras")
+subcategory_model = tf.keras.models.load_model(f"{model_folder}/subcategory_model.keras")
+usage_encoder = joblib.load(f"{model_folder}/usage_encoder.pkl")
+subcategory_encoder = joblib.load(f"{model_folder}/subcategory_encoder.pkl")
+
+# Load dataset for recommendations
+dataset_csv = "archive/Book1.csv"  # Adjust accordingly
+image_folder = "archive/images"  # Adjust accordingly
+dataset = load_dataset(dataset_csv, image_folder)
+
+st.title("Fashion Recommendation System For Men")
+st.success("This app uses machine learning models to predict fashion categories and recommend similar items.")
+st.success("Please select an image from your computer to get started.")
+st.write("Upload an image to predict its color, usage, and subcategory.")
+
+uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+
+if uploaded_file is not None:
+    # Convert uploaded image to OpenCV format
+    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+    img = cv2.imdecode(file_bytes, 1)
+    st.image(img, caption="Uploaded Image", use_container_width=True)
+    
+    # Extract features using the same method as training
+    X_input = np.array(extract_image_features(img)).reshape(1, -1)  # Ensure correct shape
+    dominant_color = extract_dominant_color(img)
+
+    # Convert RGB tuple to HEX for display
+    dominant_color_hex = "#{:02x}{:02x}{:02x}".format(*dominant_color)
+
+    # Display color as a colored box
+    st.markdown(
+        f"""
+        <div style="width:50px; height:50px; background-color:{dominant_color_hex}; border-radius:5px;"></div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.write(f"**Dominant Color:** {dominant_color} (RGB) / {dominant_color_hex} (HEX)")
+    
+    # Predict usage
+    usage_pred_numeric = np.argmax(usage_model.predict(X_input), axis=1)
+    usage_pred_label = usage_encoder.inverse_transform(usage_pred_numeric)[0]
+    
+    # Predict subcategory
+    sub_pred_numeric = np.argmax(subcategory_model.predict(X_input), axis=1)
+    sub_pred_label = subcategory_encoder.inverse_transform(sub_pred_numeric)[0]
+    
+    # Display results
+    st.subheader("Predictions:")
+    st.write(f"**Dominant Color:** {dominant_color}")
+    st.write(f"**Predicted Usage:** {usage_pred_label}")
+    st.write(f"**Predicted Subcategory:** {sub_pred_label}")
+    
+    # Display accuracy (optional: placeholder values, can be updated with real metrics)
+    usage_acc = 90  # Replace with actual accuracy if available
+    subcategory_acc = 88  # Replace with actual accuracy if available
+    st.write(f"**Usage Prediction Accuracy:** {usage_acc}%")
+    st.write(f"**Subcategory Prediction Accuracy:** {subcategory_acc}%")
+
+#############################################################################################################################################################
+#############################################################################################################################################################
+#############################################################################################################################################################
+    pkl_path = "model_details/dominant_colors.pkl"  # Adjust path as needed
+
+    st.subheader("🔍 Similar Items Recommendation")
+
+    # Category selection
+    category_map = {"Bottomwear": "0", "Topwear": "1"}  # Correct category names
+    usage_mapping = {
+        0: "Casual",
+        1: "Ethnic",
+        2: "Formal",
+        4: "Party",
+        5: "Smart Casual",
+        6: "Sports",
+        7: "Travel"
+    }
+
+    # Reverse mapping for filtering
+    reverse_usage_mapping = {v: k for k, v in usage_mapping.items()}
+
+    category_options = list(category_map.keys())  # Show category options
+    selected_category = st.selectbox("📌 Select a category:", category_options)
+
+    # Convert selected category to actual numeric value
+    selected_category_code = category_map[selected_category]
+
+    # Usage selection (single select)
+    selected_usage_type = st.selectbox("🎯 Filter by Usage:", list(usage_mapping.values()))
+
+    # Convert selected usage to numeric value
+    selected_usage_id = reverse_usage_mapping[selected_usage_type]
+
+    # Find similar items
+    similar_items = find_similar_colors(img, pkl_path, int(selected_category_code), [selected_usage_id])
+
+    # Display similar items
+    if similar_items:
+        num_images = len(similar_items)
+        cols = st.columns(min(num_images, 5))  # Show max 5 images per row
+
+        for i, item in enumerate(similar_items):
+            with cols[i % 5]:  # Distribute images across columns
+                st.image(item["path"], caption=f"Similar Item {i+1}", use_container_width=True)
+                st.write(f"**Article Type:** {item['article_type']}")
+
+                # Decode numeric usage value
+                decoded_usage = usage_mapping.get(int(item["usage"]), "Unknown")
+                st.write(f"**Usage:** {decoded_usage}")
+
+                st.write(f"**Dominant Color:** RGB {item['color']}")
+
+                # Convert RGB tuple to CSS-friendly format
+                rgb_color = f"rgb{item['color']}"  # Convert (255, 0, 0) → "rgb(255, 0, 0)"
+
+                st.markdown(
+                    f"""
+                    <div style="width:50px; height:50px; background-color:{rgb_color}; border-radius:5px; border:1px solid white;"></div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+    else:
+        st.write("⚠️ No similar items found. Try again!")
+
+
+#############################################################################################################################################################
+#############################################################################################################################################################
+#############################################################################################################################################################
+
+    # 🔻 **Force a New Row Before Outfit Recommendation**
+    st.markdown("---")  # This adds a horizontal line for clear separation
+
+    # 🟢 SECTION 2: Outfit Recommendation
+    with st.container():  # Wrap in a container to prevent overlap
+        st.subheader("👕 Outfit Recommendation System")
+
+        # User selects category (Topwear or Bottomwear)
+        category_map = {"Topwear": "1", "Bottomwear": "0"}
+        selected_category = st.selectbox("📌 Select the category of the uploaded image:", list(category_map.keys()))
+        selected_category_code = category_map[selected_category]
+
+        # User selects usage type
+        selected_usage = st.selectbox("🎭 Select the Usage Type:", list(usage_mapping.values()))
+        selected_usage_code = list(usage_mapping.keys())[list(usage_mapping.values()).index(selected_usage)]
+
+        # Let user choose a color theory approach
+        approach_options = ["Complementary", "Analogous", "Triadic", "Monochromatic"]
+        selected_approach = st.selectbox("🎨 Select a Color Theory Approach:", approach_options)
+
+        # Ensure 'img' is already provided
+        if 'img' in locals() and img is not None:
+            with st.spinner("🔍 Finding the best match..."):
+                recommended_items = recommend_outfit(img, pkl_path, selected_category_code, selected_usage_code, selected_approach)
+
+            if recommended_items:
+                opposite_category = "Bottomwear" if selected_category == "Topwear" else "Topwear"
+                st.write(f"### 🏆 Recommended {opposite_category} ({selected_approach} Matching)")
+
+                # Display recommendations in a grid layout
+                cols = st.columns(min(len(recommended_items), 5))  # Max 5 columns
+                for i, item in enumerate(recommended_items):
+                    with cols[i % 5]:  # Distribute items evenly
+                        st.image(item["path"], caption=f"Recommendation {i+1}", use_container_width=True)
+                        st.write(f"👕 **Article Type:** {item['article_type']}")
+                        st.write(f"🎨 **Dominant Color:** RGB {item['color']}")
+            else:
+                st.warning("⚠️ No matching outfit found. Try a different image or approach.")
+        else:
+            st.error("⚠️ Image not found! Please ensure 'img' is correctly passed before calling this function.")
+
+#############################################################################################################################################################
+#############################################################################################################################################################
+#############################################################################################################################################################
+
+    # 🔻 **Color Theory Information Section**
+    st.markdown("---")  # Separator for clarity
+
+    st.subheader("🎨 Understanding Color Theory in Fashion")
+
+    st.write(
+        "Different color theory approaches can be used to create stylish and visually appealing outfits. "
+        "Here's a quick breakdown of the available options:"
+    )
+
+    st.image("infographs/img1.png", caption="Complementary Theory Guide", use_container_width=True)
+    st.write(f"🔹 **Complementary :** Uses colors opposite each other on the color wheel for high contrast and bold looks.")
+    
+    # 🔻 **Color Theory Information Section**
+    st.markdown("---")  # Separator for clarity
+
+
+    st.image("infographs/img3.png", caption="Analogous Theory Guide", use_container_width=True)
+    st.write(f"🔹 **Analogous :** Uses colors that are next to each other on the color wheel, creating a harmonious and cohesive outfit..")
+    
+    # 🔻 **Color Theory Information Section**
+    st.markdown("---")  # Separator for clarity
+
+
+    st.image("infographs/img4.png", caption="Triadic Theory Guide", use_container_width=True)
+    st.write(f"🔹 **Triadic :** Uses three colors evenly spaced around the color wheel, offering vibrant and balanced combinations.")
+    
+    # 🔻 **Color Theory Information Section**
+    st.markdown("---")  # Separator for clarity
+
+
+    st.image("infographs/img2.png", caption="Monochromatic Theory Guide", use_container_width=True)
+    st.write(f"🔹 **Monochromatic :** Uses different shades, tones, and tints of a single color for a sophisticated, minimalist style.")
+    
+    # 🔻 **Color Theory Information Section**
+    st.markdown("---")  # Separator for clarity

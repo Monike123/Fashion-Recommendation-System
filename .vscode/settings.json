@@ -1,0 +1,8 @@
+{
+    "workbench.editor.autoLockGroups": {
+        "jupyter-notebook": true,
+        "jsProfileVisualizer.cpuprofile.table": true,
+        "hediet.vscode-drawio": true,
+        "hediet.vscode-drawio-text": true
+    }
+}
