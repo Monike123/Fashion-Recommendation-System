@@ -19,10 +19,13 @@ The Smart Outfit Recommender leverages advanced artificial intelligence to analy
 ## Accuracy of Models
 - **Men Model**
 - **99.07%**
+
 - ![Screenshot 2025-02-26 022613](https://github.com/user-attachments/assets/607b36a7-2ed1-4b8e-8a88-cb1089a7cb44)
 
-- **Women Model
+- **Women Model**:
+  
 - **97.90%**
+ 
 -![Screenshot 2025-03-04 131115](https://github.com/user-attachments/assets/31062919-c3ab-4d5f-aa84-627dca458c48)
 
 
