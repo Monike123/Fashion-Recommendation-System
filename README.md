@@ -2,10 +2,10 @@
 ![DALL·E 2025-03-13 03 07 06 - A futuristic and stylish profile image for a fashion recommendation project  The image features a sleek AI-powered mannequin with a glowing neural net](https://github.com/user-attachments/assets/d3d0b12c-9c3d-4bfb-970c-2e7c7d66aa21)
 
 
-📌 Overview
+# 📌 Overview
 The Smart Outfit Recommender is an AI-powered system that predicts clothing categories and suggests outfits based on color coordination. Using deep learning and machine learning, it helps users discover stylish and well-matched outfit recommendations effortlessly.
 
-📌 Description
+# 📌 Description
 The Smart Outfit Recommender leverages advanced artificial intelligence to analyze clothing attributes such as color, style, and category. By utilizing deep learning models, it identifies patterns in fashion choices and suggests complementary outfit combinations. The system enhances the user experience by ensuring that recommended outfits align with personal preferences and modern fashion trends. It can be integrated into e-commerce platforms, personal wardrobe assistants, or virtual styling applications to provide data-driven fashion guidance.
 
 
