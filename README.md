@@ -109,7 +109,7 @@ streamlit run app.py
 Contributions are welcome! Feel free to fork the repository and submit pull requests.
 
 ## 📜 License
-
+This project is licensed under the [GNU PUBLIC](LICENSE)
 
 ## 📬 Contact
 For inquiries, please reach out via manassawant5913@gmail.com or open an issue in the repository.
