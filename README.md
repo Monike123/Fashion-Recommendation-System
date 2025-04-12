@@ -8,6 +8,11 @@ The Smart Outfit Recommender is an AI-powered system that predicts clothing cate
 # 📌 Description
 The Smart Outfit Recommender leverages advanced artificial intelligence to analyze clothing attributes such as color, style, and category. By utilizing deep learning models, it identifies patterns in fashion choices and suggests complementary outfit combinations. The system enhances the user experience by ensuring that recommended outfits align with personal preferences and modern fashion trends. It can be integrated into e-commerce platforms, personal wardrobe assistants, or virtual styling applications to provide data-driven fashion guidance.
 
+# 📌 Usage Example
+
+
+https://github.com/user-attachments/assets/20805310-63d6-4d98-98ee-8951790213e8
+
 
 ## ✨ Features
 - **Usage Prediction Model**: Classifies clothing items based on their intended use (e.g., casual, formal, sportswear).
